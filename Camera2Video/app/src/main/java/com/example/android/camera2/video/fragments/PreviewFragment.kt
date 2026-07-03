@@ -114,13 +114,36 @@ class PreviewFragment : Fragment() {
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     }
 
-    /** [CameraCharacteristics] corresponding to the provided Camera ID */
-    private val characteristics: CameraCharacteristics by lazy {
-        cameraManager.getCameraCharacteristics(args.cameraId)
+    private val vrCameraPreferences by lazy {
+        requireContext().getSharedPreferences(VR_CAMERA_SELECTION_PREFERENCES, Context.MODE_PRIVATE)
     }
 
-    /** File where the recording will be saved */
-    private val outputFile: File by lazy { createFile(requireContext(), "mp4") }
+    /** Camera ID used for the visible preview and the left-eye recording. */
+    private val primaryCameraId: String by lazy {
+        vrCameraPreferences.getString(KEY_LEFT_CAMERA_ID, null) ?: args.cameraId
+    }
+
+    /** Optional second camera ID used for the right-eye recording. */
+    private val secondaryCameraId: String? by lazy {
+        vrCameraPreferences.getString(KEY_RIGHT_CAMERA_ID, null)
+                ?.takeIf { it != primaryCameraId }
+    }
+
+    /** [CameraCharacteristics] corresponding to the visible/left Camera ID. */
+    private val characteristics: CameraCharacteristics by lazy {
+        cameraManager.getCameraCharacteristics(primaryCameraId)
+    }
+
+    /** [CameraCharacteristics] corresponding to the optional right Camera ID. */
+    private val secondaryCharacteristics: CameraCharacteristics? by lazy {
+        secondaryCameraId?.let { cameraManager.getCameraCharacteristics(it) }
+    }
+
+    /** File where the left-eye recording will be saved */
+    private val outputFile: File by lazy { createFile(requireContext(), "left", "mp4") }
+
+    /** File where the right-eye recording will be saved */
+    private val secondaryOutputFile: File by lazy { createFile(requireContext(), "right", "mp4") }
 
     /**
      * Setup a [Surface] for the encoder
@@ -141,8 +164,14 @@ class PreviewFragment : Fragment() {
     /** Captures frames from a [CameraDevice] for our video recording */
     private lateinit var session: CameraCaptureSession
 
+    private var secondarySession: CameraCaptureSession? = null
+
     /** The [CameraDevice] that will be opened in this fragment */
     private lateinit var camera: CameraDevice
+
+    private var secondaryCamera: CameraDevice? = null
+
+    private var secondaryEncoder: EncoderWrapper? = null
 
     /** Requests used for preview only in the [CameraCaptureSession] */
     private val previewRequest: CaptureRequest? by lazy {
@@ -255,7 +284,7 @@ class PreviewFragment : Fragment() {
     private fun initializeCamera() = lifecycleScope.launch(Dispatchers.Main) {
 
         // Open the selected camera
-        camera = openCamera(cameraManager, args.cameraId, cameraHandler)
+        camera = openCamera(cameraManager, primaryCameraId, cameraHandler)
 
         // Creates list of Surfaces where the camera will output frames
         val previewTargets = pipeline.getPreviewTargets()
@@ -284,10 +313,12 @@ class PreviewFragment : Fragment() {
                                 ActivityInfo.SCREEN_ORIENTATION_LOCKED
 
                         pipeline.actionDown(encoderSurface)
+                        prepareSecondaryCamera()
 
                         // Finalizes encoder setup and starts recording
                         recordingStarted = true
                         encoder.start()
+                        secondaryEncoder?.start()
                         cvRecordingStarted.open()
                         pipeline.startRecording()
 
@@ -313,6 +344,8 @@ class PreviewFragment : Fragment() {
                             }, cameraHandler)
                         }
 
+                        startSecondaryRepeatingRequest()
+
                         recordingStartMillis = System.currentTimeMillis()
                         Log.d(TAG, "Recording started")
 
@@ -336,7 +369,9 @@ class PreviewFragment : Fragment() {
                     encoder.waitForFirstFrame()
 
                     session.stopRepeating()
+                    secondarySession?.stopRepeating()
                     session.close()
+                    secondarySession?.close()
 
                     pipeline.clearFrameListener()
                     fragmentBinding.captureButton.setOnTouchListener(null)
@@ -371,10 +406,16 @@ class PreviewFragment : Fragment() {
 
                     Log.d(TAG, "Recording stopped. Output file: $outputFile")
 
-                    if (encoder.shutdown()) {
+                    val secondaryShutdownSucceeded = secondaryEncoder?.shutdown() ?: true
+
+                    if (encoder.shutdown() && secondaryShutdownSucceeded) {
                         // Broadcasts the media file to the rest of the system
+                        val recordedFiles = listOfNotNull(
+                                outputFile.absolutePath,
+                                secondaryOutputFile.takeIf { secondaryEncoder != null }?.absolutePath
+                        ).toTypedArray()
                         MediaScannerConnection.scanFile(
-                                requireView().context, arrayOf(outputFile.absolutePath), null, null)
+                                requireView().context, recordedFiles, null, null)
 
                         if (outputFile.exists()) {
                             // Launch external activity via intent to play video recorded using our provider
@@ -410,6 +451,39 @@ class PreviewFragment : Fragment() {
 
             true
         }
+    }
+
+    private suspend fun prepareSecondaryCamera() {
+        val cameraId = secondaryCameraId ?: return
+        if (secondaryCamera != null) return
+
+        val secondaryOrientation = secondaryCharacteristics?.get(
+                CameraCharacteristics.SENSOR_ORIENTATION) ?: orientation
+        secondaryEncoder = EncoderWrapper(args.width, args.height, RECORDER_VIDEO_BITRATE, args.fps,
+                args.dynamicRange, secondaryOrientation, secondaryOutputFile,
+                /*useMediaRecorder*/ false, args.videoCodec)
+        secondaryCamera = openCamera(cameraManager, cameraId, cameraHandler)
+        secondarySession = createCaptureSession(secondaryCamera!!,
+                listOf(secondaryEncoder!!.getInputSurface()), cameraHandler,
+                recordingCompleteOnClose = false)
+    }
+
+    private fun startSecondaryRepeatingRequest() {
+        val camera = secondaryCamera ?: return
+        val session = secondarySession ?: return
+        val encoder = secondaryEncoder ?: return
+        val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(encoder.getInputSurface())
+        }.build()
+        session.setRepeatingRequest(request, object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(session: CameraCaptureSession,
+                                            request: CaptureRequest,
+                                            result: TotalCaptureResult) {
+                if (isCurrentlyRecording()) {
+                    encoder.frameAvailable()
+                }
+            }
+        }, cameraHandler)
     }
 
     /** Opens the camera and returns the opened device (as the result of the suspend coroutine) */
@@ -513,6 +587,7 @@ class PreviewFragment : Fragment() {
         super.onStop()
         try {
             camera.close()
+            secondaryCamera?.close()
         } catch (exc: Throwable) {
             Log.e(TAG, "Error closing camera", exc)
         }
@@ -524,6 +599,7 @@ class PreviewFragment : Fragment() {
         pipeline.cleanup()
         cameraThread.quitSafely()
         encoderSurface.release()
+        secondaryEncoder?.getInputSurface()?.release()
     }
 
     override fun onDestroyView() {
@@ -536,11 +612,14 @@ class PreviewFragment : Fragment() {
 
         private const val RECORDER_VIDEO_BITRATE: Int = 10_000_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
+        private const val VR_CAMERA_SELECTION_PREFERENCES = "vr_camera_selection"
+        private const val KEY_LEFT_CAMERA_ID = "left_camera_id"
+        private const val KEY_RIGHT_CAMERA_ID = "right_camera_id"
 
-        /** Creates a [File] named with the current date and time */
-        private fun createFile(context: Context, extension: String): File {
+        /** Creates a [File] named with the current date, eye label, and time */
+        private fun createFile(context: Context, eyeLabel: String, extension: String): File {
             val sdf = SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS", Locale.US)
-            return File(context.filesDir, "VID_${sdf.format(Date())}.$extension")
+            return File(context.filesDir, "VID_${eyeLabel}_${sdf.format(Date())}.$extension")
         }
     }
 }

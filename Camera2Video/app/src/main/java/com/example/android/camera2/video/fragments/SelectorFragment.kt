@@ -30,6 +30,9 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import android.widget.Button
+import android.widget.LinearLayout
+import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.navigation.Navigation
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -47,17 +50,75 @@ class SelectorFragment : Fragment() {
             inflater: LayoutInflater,
             container: ViewGroup?,
             savedInstanceState: Bundle?
-    ): View? = RecyclerView(requireContext())
+    ): View? = LinearLayout(requireContext()).apply {
+        orientation = LinearLayout.VERTICAL
+
+        addView(Button(requireContext()).apply {
+            id = R.id.left_camera_button
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+
+        addView(Button(requireContext()).apply {
+            id = R.id.right_camera_button
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+
+        addView(RecyclerView(requireContext()).apply {
+            id = R.id.camera_config_list
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        ))
+    }
 
     @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        view as RecyclerView
-        view.apply {
-            layoutManager = LinearLayoutManager(requireContext())
+        val root = view as LinearLayout
+        val leftCameraButton = root.findViewById<Button>(R.id.left_camera_button)
+        val rightCameraButton = root.findViewById<Button>(R.id.right_camera_button)
+        val cameraConfigList = root.findViewById<RecyclerView>(R.id.camera_config_list)
 
-            val cameraManager =
-                    requireContext().getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val cameraManager =
+                requireContext().getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val cameraIds = cameraManager.cameraIdList.toList()
+        val preferences = requireContext().getSharedPreferences(
+                VR_CAMERA_SELECTION_PREFERENCES, Context.MODE_PRIVATE)
+
+        fun updateCameraButtons() {
+            leftCameraButton.text = getString(
+                    R.string.left_camera_button,
+                    preferences.getString(KEY_LEFT_CAMERA_ID, null) ?: getString(R.string.camera_not_selected))
+            rightCameraButton.text = getString(
+                    R.string.right_camera_button,
+                    preferences.getString(KEY_RIGHT_CAMERA_ID, null) ?: getString(R.string.camera_not_selected))
+        }
+
+        fun showCameraPicker(title: Int, preferenceKey: String) {
+            AlertDialog.Builder(requireContext())
+                    .setTitle(title)
+                    .setItems(cameraIds.toTypedArray()) { _, which ->
+                        preferences.edit().putString(preferenceKey, cameraIds[which]).apply()
+                        updateCameraButtons()
+                    }
+                    .show()
+        }
+
+        leftCameraButton.setOnClickListener {
+            showCameraPicker(R.string.select_left_camera_title, KEY_LEFT_CAMERA_ID)
+        }
+        rightCameraButton.setOnClickListener {
+            showCameraPicker(R.string.select_right_camera_title, KEY_RIGHT_CAMERA_ID)
+        }
+        updateCameraButtons()
+
+        cameraConfigList.apply {
+            layoutManager = LinearLayoutManager(requireContext())
 
             val cameraList = enumerateVideoCameras(cameraManager)
 
@@ -126,6 +187,10 @@ class SelectorFragment : Fragment() {
     }
 
     companion object {
+
+        private const val VR_CAMERA_SELECTION_PREFERENCES = "vr_camera_selection"
+        private const val KEY_LEFT_CAMERA_ID = "left_camera_id"
+        private const val KEY_RIGHT_CAMERA_ID = "right_camera_id"
 
         private data class CameraInfo(
                 val name: String,

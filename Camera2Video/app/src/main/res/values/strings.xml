@@ -23,4 +23,5 @@
     <string name="camera_not_selected">Not selected</string>
     <string name="select_left_camera_title">Select left camera ID</string>
     <string name="select_right_camera_title">Select right camera ID</string>
+    <string name="secondary_camera_unavailable">Second camera could not be opened; recording left camera only</string>
 </resources>

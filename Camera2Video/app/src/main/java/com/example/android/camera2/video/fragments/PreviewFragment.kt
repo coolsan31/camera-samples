@@ -313,7 +313,7 @@ class PreviewFragment : Fragment() {
                                 ActivityInfo.SCREEN_ORIENTATION_LOCKED
 
                         pipeline.actionDown(encoderSurface)
-                        prepareSecondaryCamera()
+                        prepareSecondaryCameraOrFallback()
 
                         // Finalizes encoder setup and starts recording
                         recordingStarted = true
@@ -367,6 +367,7 @@ class PreviewFragment : Fragment() {
 
                     /* Wait for at least one frame to process so we don't have an empty video */
                     encoder.waitForFirstFrame()
+                    secondaryEncoder?.waitForFirstFrame()
 
                     session.stopRepeating()
                     secondarySession?.stopRepeating()
@@ -450,6 +451,24 @@ class PreviewFragment : Fragment() {
             }
 
             true
+        }
+    }
+
+    private suspend fun prepareSecondaryCameraOrFallback() {
+        try {
+            prepareSecondaryCamera()
+        } catch (exc: Throwable) {
+            Log.e(TAG, "Unable to start secondary camera; continuing with left camera only", exc)
+            secondarySession?.close()
+            secondarySession = null
+            secondaryCamera?.close()
+            secondaryCamera = null
+            secondaryEncoder?.getInputSurface()?.release()
+            secondaryEncoder = null
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(activity, R.string.secondary_camera_unavailable,
+                        Toast.LENGTH_LONG).show()
+            }
         }
     }
 

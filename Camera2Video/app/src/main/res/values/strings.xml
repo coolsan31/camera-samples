@@ -18,4 +18,9 @@
     <string name="capture">Capture</string>
     <string name="error_file_not_found">Recorded file not found</string>
     <string name="recorder_shutdown_error">Recording stops too fast, please press longer</string>
+    <string name="left_camera_button">Left camera ID: %1$s</string>
+    <string name="right_camera_button">Right camera ID: %1$s</string>
+    <string name="camera_not_selected">Not selected</string>
+    <string name="select_left_camera_title">Select left camera ID</string>
+    <string name="select_right_camera_title">Select right camera ID</string>
 </resources>
